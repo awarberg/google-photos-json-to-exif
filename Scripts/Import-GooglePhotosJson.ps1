@@ -1,6 +1,7 @@
 ﻿param (
-    [string]
-    $ImageFolderPath
+    [Parameter(Mandatory=$true)]
+    [string]$MediaFolderPath,
+    [string[]]$IncludeFiles = @("*.jpg", "*.jpeg", "*.png", "*.mp4")
 )
 
 function Parse-JsonTimestamp([int]$UnixTime) {
@@ -12,11 +13,14 @@ function Parse-Geo($GeoData) {
         return $null
     }
 
-    if (-not $GeoData.latitude -or -not $GeoData.longitude) {
+    [double]$Lat = $GeoData.latitude
+    [double]$Lon = $GeoData.longitude
+
+    if ($Lat -eq 0 -and $Lon -eq 0) {
         return $null
     }
 
-    @{ Lat = $GeoData.latitude ; Lon = $GeoData.longitude }
+    @{ Lat = $Lat ; Lon = $Lon }
 }
 
 function Invoke-ExifTool($Filepath, $Command) {
@@ -38,13 +42,21 @@ function Ensure-DateTaken($FilePath, $ExifInfo, $JsonInfo) {
     
     $ExifDateStr = $DateTimeTaken.ToString("yyyy\:MM\:dd HH\:mm\:sszzz")
 
-    if ($ExifInfo.FileType -eq "PNG") {
-        if (-not $ExifInfo.CreationTime) {
-            Invoke-ExifTool -Filepath $FilePath -Command "-PNG:CreationTime=$ExifDateStr"
+    switch ($ExifInfo.FileType) {
+        "PNG" {
+            if (-not $ExifInfo.CreationTime) {
+                Invoke-ExifTool -Filepath $FilePath -Command "-PNG:CreationTime=$ExifDateStr"
+            }
         }
-    } else {
-        if (-not $ExifInfo.CreateDate) {
-            Invoke-ExifTool -Filepath $FilePath -Command "-AllDates=$ExifDateStr"
+        "MP4" {
+            if (-not $ExifInfo.CreateDate) {
+                Invoke-ExifTool -Filepath $FilePath -Command "-CreateDate=$ExifDateStr"
+            }
+        }
+        Default {
+            if (-not $ExifInfo.CreateDate) {
+                Invoke-ExifTool -Filepath $FilePath -Command "-AllDates=$ExifDateStr"
+            }
         }
     }
 }
@@ -52,7 +64,7 @@ function Ensure-DateTaken($FilePath, $ExifInfo, $JsonInfo) {
 function Ensure-Location($FilePath, $ExifInfo, $JsonInfo) {
     $Geo = Parse-Geo -GeoData $JsonInfo.geoData
 
-    if (-not $ExifInfo.GPSPosition -and $Geo) {
+    if (-not $ExifInfo.GPSLatitude -and $Geo) {
         Invoke-ExifTool -Filepath $FilePath -Command "-GPSLatitude=$($Geo.Lat) -GPSLongitude=$($Geo.Lon)"
     }
 }
@@ -63,55 +75,53 @@ function Get-JsonFile($FilePath) {
     $BaseName = $FileItem.BaseName
     $Extension = $FileItem.Extension
 
-    $JsonFile = $null
+    # Naming convention 1: Same as file name but suffixed .json e.g.
+    # 20220205_204848.jpg =>
+    # 20220205_204848.jpg.json
+    $JsonFilePath = Join-Path $DirectoryPath "$BaseName$($Extension).json"
+    $JsonFile = Get-Item -Path $JsonFilePath -ErrorAction SilentlyContinue
 
-    if ($FilePath -match "(\(\d+\))") {        
-        # Naming convention 1: File name contains numbered parenthesis, which is shifted just before the .json extension e.g.
+    if (-not $JsonFile -and $FilePath -match "(\(\d+\))") {        
+        # Naming convention 2: File name contains numbered parenthesis, which is shifted just before the .json extension e.g.
         # IMG_2687(1).PNG =>
         # IMG_2687.PNG(1).json
         $Parenthesis = $Matches[0]
         $TrimBaseName = $BaseName.Replace($Parenthesis, "")
-        $JsonFile = Get-ChildItem `
-            -Path $DirectoryPath `
-            -Filter "$TrimBaseName$($Extension)$Parenthesis.json"
-    }
-
-    if (-not $JsonFile) {
-        # Naming convention 2: Same as file name but suffixed .json e.g.
-        # 20220205_204848.jpg =>
-        # 20220205_204848.jpg.json
-        $JsonFile = Get-ChildItem `
-            -Path $DirectoryPath `
-            -Filter "$BaseName$($Extension).json"
+        $JsonFilePath = Join-Path $DirectoryPath "$TrimBaseName$($Extension)$Parenthesis.json"
+        $JsonFile = Get-Item -Path $JsonFilePath -ErrorAction SilentlyContinue
     }
 
     if (-not $JsonFile) {
         # Naming convention 3: Same as file name but max. 46 chars and suffixed .json and without the image file extension e.g.
         # 01-07-2020_D7A9A6E0-7C3B-48F8-B590-21F4F08D60A0.jpg =>
         # 01-07-2020_D7A9A6E0-7C3B-48F8-B590-21F4F08D60A.json
-        $JsonFile = Get-ChildItem `
-            -Path $DirectoryPath `
-            -Filter "$($BaseName.Substring(0, [Math]::Min($BaseName.Length, 46)))*.json"
+        $JsonFilePath = Join-Path $DirectoryPath "$($BaseName.Substring(0, [Math]::Min($BaseName.Length, 46)))*.json"
+        $JsonFile = Get-Item -Path $JsonFilePath -ErrorAction SilentlyContinue
+    }
+
+    if ($JsonFile -and $JsonFile.Count -gt 1) {
+        Write-Warning "Ambigous JSON file matches for $FilePath"
+        return $null
     }
 
     return $JsonFile
 }
 
-$ImageFiles = Get-ChildItem `
-    -Path $ImageFolderPath `
-    -Include "*.jpg", "*.jpeg", "*.png" `
+$MediaFiles = Get-ChildItem `
+    -Path $MediaFolderPath `
+    -Include $IncludeFiles `
     -Recurse
 
-$ImagesProcessed = 0
+$FilesProcessed = 0
 
-$ImageFiles | ForEach-Object { 
+$MediaFiles | ForEach-Object {
 
     $FilePath = $_.FullName
     Write-Host "Processing $FilePath"
 
-    $PercentComplete = [Math]::Floor(($ImagesProcessed++ / $ImageFiles.Count) * 100)
+    $PercentComplete = [Math]::Floor(($FilesProcessed++ / $MediaFiles.Count) * 100)
     Write-Progress `
-        -Activity "Google Photos JSON to image metadata import" `
+        -Activity "Google Photos JSON metadata import" `
         -Status "$PercentComplete% Complete:" `
         -PercentComplete $PercentComplete
     
@@ -124,8 +134,7 @@ $ImageFiles | ForEach-Object {
     $JsonFilePath = $JsonFile.FullName
     try {
         $JsonInfo = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
-    }
-    catch {
+    } catch {
         Write-Warning "Failed to load JSON file $JsonFilePath - $($_)"
         return
     }
@@ -133,5 +142,5 @@ $ImageFiles | ForEach-Object {
     $ExifInfo = exiftool $FilePath -json | ConvertFrom-Json
 
     Ensure-DateTaken -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo
-    Ensure-Location -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo
+    Ensure-Location -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo    
 }
