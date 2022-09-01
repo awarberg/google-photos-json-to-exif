@@ -32,3 +32,4 @@ If a piece of metadata is missing from the media file, but is available in the J
 The current metadata currently supported is:
 1. Date taken (JPEG: `AllDates`, PNG: `CreationTime`, MP4: `CreateDate`)
 2. GPS coordinates (`GPSLatitude`, `GPSLongitude`)
+3. Comment field (`xmp-dc:description`, `UserComment`)
