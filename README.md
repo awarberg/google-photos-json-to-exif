@@ -33,3 +33,7 @@ The current metadata currently supported is:
 1. Date taken (JPEG: `AllDates`, PNG: `CreationTime`, MP4: `CreateDate`)
 2. GPS coordinates (`GPSLatitude`, `GPSLongitude`)
 3. Comment field (`xmp-dc:description`, `UserComment`)
+
+## Remove original files
+The script below will remove the original files (those have '-edited' version). Some may use Google Photo's editing tools, which would create those 'edited' files
+`.\Merge-Edited-Files.ps1 -MediaFolderPath <path-to-media-folder>`
