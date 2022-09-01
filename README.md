@@ -35,5 +35,6 @@ The current metadata currently supported is:
 3. Comment field (`xmp-dc:description`, `UserComment`)
 
 ## Remove original files
-The script below will remove the original files (those have '-edited' version). Some may use Google Photo's editing tools, which would create those 'edited' files
+The script below will remove the original files (those have '-edited' version). Some may use Google Photo's editing tools, which would create those 'edited' files.
+
 `.\Merge-Edited-Files.ps1 -MediaFolderPath <path-to-media-folder>`
