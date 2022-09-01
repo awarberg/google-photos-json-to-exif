@@ -4,6 +4,15 @@
     [string[]]$IncludeFiles = @("*.jpg", "*.jpeg", "*.png", "*.mp4")
 )
 
+# Store warning messages
+$Global:warnList = @()
+
+# Store warning files can't be processed
+$Global:issueList = @()
+
+# completely override all info in image's exif
+$Global:overwriteExif = $true
+
 function Parse-JsonTimestamp([int]$UnixTime) {
     [DateTimeOffset]::FromUnixTimeSeconds($UnixTime)
 }
@@ -35,8 +44,10 @@ function Ensure-DateTaken($FilePath, $ExifInfo, $JsonInfo) {
 
     try {
         $DateTimeTaken = Parse-JsonTimestamp $JsonInfo.photoTakenTime.timestamp
-    } catch {
-        Write-Warning "Failed to parse photo taken time for $FilePath - $($JsonInfo.photoTakenTime.timestamp) - $($_)"
+    } catch {        
+        $warn = "Failed to parse photo taken time for $FilePath - $($JsonInfo.photoTakenTime.timestamp) - $($_)"
+        Write-Warning $warn
+        $Global:issueList += $warn
         return
     }
     
@@ -44,17 +55,17 @@ function Ensure-DateTaken($FilePath, $ExifInfo, $JsonInfo) {
 
     switch ($ExifInfo.FileType) {
         "PNG" {
-            if (-not $ExifInfo.CreationTime) {
+            if ((-not $ExifInfo.CreationTime) -or $Global:overwriteExif) {
                 Invoke-ExifTool -Filepath $FilePath -Command "-PNG:CreationTime=$ExifDateStr"
             }
         }
         "MP4" {
-            if (-not $ExifInfo.CreateDate) {
+            if ((-not $ExifInfo.CreateDate) -or $Global:overwriteExif) {
                 Invoke-ExifTool -Filepath $FilePath -Command "-CreateDate=$ExifDateStr"
             }
         }
         Default {
-            if (-not $ExifInfo.CreateDate) {
+            if ((-not $ExifInfo.CreateDate) -or $Global:overwriteExif) {
                 Invoke-ExifTool -Filepath $FilePath -Command "-AllDates=$ExifDateStr"
             }
         }
@@ -64,8 +75,21 @@ function Ensure-DateTaken($FilePath, $ExifInfo, $JsonInfo) {
 function Ensure-Location($FilePath, $ExifInfo, $JsonInfo) {
     $Geo = Parse-Geo -GeoData $JsonInfo.geoData
 
-    if (-not $ExifInfo.GPSLatitude -and $Geo) {
+    if ($Geo -and ($Global:overwriteExif -or (-not $ExifInfo.GPSLatitude)) ) {
         Invoke-ExifTool -Filepath $FilePath -Command "-GPSLatitude=$($Geo.Lat) -GPSLongitude=$($Geo.Lon)"
+    }
+}
+
+function Ensure-Comment($FilePath, $ExifInfo, $JsonInfo) {
+    if (-not $JsonInfo.description) {
+        return
+    }
+
+    $comment = $JsonInfo.description
+
+    if ($comment -and ($Global:overwriteExif -or (-not $ExifInfo.comment)) ) {
+        Invoke-ExifTool -Filepath $FilePath -Command "-xmp-dc:description=$($comment)"
+        Invoke-ExifTool -Filepath $FilePath -Command "-UserComment=$($comment)"
     }
 }
 
@@ -99,8 +123,21 @@ function Get-JsonFile($FilePath) {
         $JsonFile = Get-Item -Path $JsonFilePath -ErrorAction SilentlyContinue
     }
 
-    if ($JsonFile -and $JsonFile.Count -gt 1) {
-        Write-Warning "Ambigous JSON file matches for $FilePath"
+    $differ = "-edited"
+    if (-not $JsonFile -and $FilePath -match "\b$differ\b") {
+        # Naming convention 4: Same as file name but has the 'edited' at the end, before the '.json'. E.g.
+        # received_728318214459446-edited.jpeg =>
+        # received_728318214459446.jpeg.json
+        $matchedWord = $Matches[0]
+        $TrimBaseName = $BaseName.Replace($matchedWord, "")
+        $JsonFilePath = Join-Path $DirectoryPath "$TrimBaseName$($Extension).json"
+        $JsonFile = Get-Item -Path $JsonFilePath -ErrorAction SilentlyContinue
+    }
+
+    if ($JsonFile -and $JsonFile.Count -gt 1) {        
+        $warn = "Ambigous JSON file matches for $FilePath"
+        Write-Warning $warn
+        $Global:issueList += $warn
         return $null
     }
 
@@ -121,13 +158,15 @@ $MediaFiles | ForEach-Object {
 
     $PercentComplete = [Math]::Floor(($FilesProcessed++ / $MediaFiles.Count) * 100)
     Write-Progress `
-        -Activity "Google Photos JSON metadata import" `
+        -Activity "Google Photos JSON metadata import ($FilesProcessed/$($MediaFiles.Count))" `
         -Status "$PercentComplete% Complete:" `
         -PercentComplete $PercentComplete
     
     $JsonFile = Get-JsonFile -FilePath $FilePath
     if (-not $JsonFile) {
-        Write-Warning "Skipping $FilePath - no JSON file found" 
+        $warn = "Skipping $FilePath - no JSON file found"
+        Write-Warning $warn
+        $Global:warnList += $warn
         return
     }
 
@@ -135,12 +174,23 @@ $MediaFiles | ForEach-Object {
     try {
         $JsonInfo = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
     } catch {
-        Write-Warning "Failed to load JSON file $JsonFilePath - $($_)"
+        $warn = "Failed to load JSON file $JsonFilePath - $($_)"
+        Write-Warning $warn
+        $Global:warnList += $warn
         return
     }
 
     $ExifInfo = exiftool $FilePath -json | ConvertFrom-Json
 
     Ensure-DateTaken -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo
-    Ensure-Location -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo    
+    Ensure-Location -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo
+    Ensure-Comment -FilePath $FilePath -ExifInfo $ExifInfo -JsonInfo $JsonInfo
 }
+
+$tmpArray = $Global:issueList | Out-String
+Write-Host "Issued list:" -ForegroundColor Yellow
+Write-Host $tmpArray
+
+$tmpArray = $Global:warnList | Out-String
+Write-Host "Issued Files:" -ForegroundColor Red
+Write-Host $tmpArray
