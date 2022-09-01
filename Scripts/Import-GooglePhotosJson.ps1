@@ -158,7 +158,7 @@ $MediaFiles | ForEach-Object {
 
     $PercentComplete = [Math]::Floor(($FilesProcessed++ / $MediaFiles.Count) * 100)
     Write-Progress `
-        -Activity "Google Photos JSON metadata import" `
+        -Activity "Google Photos JSON metadata import ($FilesProcessed/$($MediaFiles.Count))" `
         -Status "$PercentComplete% Complete:" `
         -PercentComplete $PercentComplete
     
